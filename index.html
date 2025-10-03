@@ -334,303 +334,390 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 
-  <script>
-    // Configuration
-    const GOOGLE_API_KEY = "AIzaSyCFXR0r0Iv-uMm-O1b3brdeDqYNKmatjRg";
-    const DRIVE_FOLDER_ID = "1vCJWwG8rUB9Fod5-QLWbm6cOOE0syrBF";
+        
+<script>
+  // === CONFIG (keep your existing keys) ===
+  const GOOGLE_API_KEY = "AIzaSyCFXR0r0Iv-uMm-O1b3brdeDqYNKmatjRg";
+  const DRIVE_FOLDER_ID = "1vCJWwG8rUB9Fod5-QLWbm6cOOE0syrBF";
 
-    // Firebase Configuration - Replace with your Firebase config
-    const firebaseConfig = {
-      apiKey: "AIzaSyCUyBJOM3pGYDeOk1oLEXWiFdLC_Bys4rY",
-      authDomain: "quicksync-5d384.firebaseapp.com",
-  databaseURL: "https://quicksync-5d384-default-rtdb.asia-southeast1.firebasedatabase.app",
-      databaseURL: "https://quicksync-5d384-default-rtdb.asia-southeast1.firebasedatabase.app/",
-      projectId: "quicksync-5d384",
-      storageBucket: "quicksync-5d384.firebasestorage.app",
-      messagingSenderId: "431033998399",
-      appId: "1:431033998399:web:5c1884bcfb87b0be6bac8a"
+  // Firebase config (kept same as original)
+  const firebaseConfig = {
+    apiKey: "AIzaSyCUyBJOM3pGYDeOk1oLEXWiFdLC_Bys4rY",
+    authDomain: "quicksync-5d384.firebaseapp.com",
+    databaseURL: "https://quicksync-5d384-default-rtdb.asia-southeast1.firebasedatabase.app/",
+    projectId: "quicksync-5d384",
+    storageBucket: "quicksync-5d384.firebasestorage.app",
+    messagingSenderId: "431033998399",
+    appId: "1:431033998399:web:5c1884bcfb87b0be6bac8a"
+  };
+
+  // === INIT Firebase ===
+  firebase.initializeApp(firebaseConfig);
+  const database = firebase.database();
+  const syncRef = database.ref('audioSync');
+
+  // === Globals ===
+  let isHost = false;
+  let isJoin = false;
+  let currentAudio = null;
+  let mediaFiles = [];
+  let hostHeartbeatInterval = null; // host writes heartbeat every few seconds
+  const audioElement = document.getElementById('audio-player');
+  audioElement.preload = 'auto';
+  audioElement.crossOrigin = 'anonymous';
+  audioElement.controls = false;
+
+  // Server time offset handling (important)
+  let serverTimeOffset = 0;
+  const offsetRef = database.ref('.info/serverTimeOffset');
+  offsetRef.on('value', snap => { serverTimeOffset = snap.val() || 0; });
+
+  function serverNow() { // ms
+    return Date.now() + (serverTimeOffset || 0);
+  }
+
+  // === Fetch files (same logic, kept) ===
+  async function fetchMediaFiles() {
+    try {
+      const url = `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER_ID}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)&key=${GOOGLE_API_KEY}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data && data.files) {
+        mediaFiles = data.files.filter(f => f.mimeType && f.mimeType.startsWith('audio/'));
+        return mediaFiles;
+      }
+      return [];
+    } catch (err) {
+      console.error('Error fetching media files:', err);
+      return [];
+    }
+  }
+
+  // === UI helpers ===
+  function displayPlaylist(files) {
+    const playlist = document.getElementById('playlist');
+    playlist.innerHTML = '';
+    if (!files || files.length === 0) {
+      playlist.innerHTML = '<p style="text-align:center; color:#666;">No audio files found</p>';
+      return;
+    }
+    files.forEach((file, i) => {
+      const item = document.createElement('div');
+      item.className = 'playlist-item';
+      item.innerHTML = `
+        <div class="playlist-icon">🎵</div>
+        <div class="playlist-info">
+          <div class="playlist-title">${file.name}</div>
+          <div class="playlist-type">Audio Track</div>
+        </div>
+      `;
+      item.onclick = () => hostChooseTrack(file, i);
+      playlist.appendChild(item);
+    });
+  }
+
+  // === Host flow ===
+  async function initHost() {
+    isHost = true; isJoin = false;
+    document.getElementById('initial-screen').classList.add('hidden');
+    document.getElementById('host-screen').classList.remove('hidden');
+    const files = await fetchMediaFiles();
+    displayPlaylist(files);
+  }
+
+  // Host selects track
+  function hostChooseTrack(file, index) {
+    currentAudio = file;
+    // Update UI
+    document.getElementById('host-screen').classList.add('hidden');
+    document.getElementById('player-screen').classList.remove('hidden');
+    document.getElementById('host-controls').style.display = 'flex';
+    document.getElementById('track-title').textContent = file.name;
+    document.getElementById('track-artist').textContent = 'Audio File';
+    // Prepare audio source
+    const audioUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${GOOGLE_API_KEY}`;
+    audioElement.src = audioUrl;
+    audioElement.load();
+
+    // schedule start a short time in future to let clients buffer (2s)
+    const startAt = serverNow() + 2000;
+    const cmd = {
+      type: 'play',
+      isPlaying: true,
+      trackId: file.id,
+      trackName: file.name,
+      startAt: startAt,
+      serverTime: serverNow()
     };
+    // single write command (no 50ms spam)
+    syncRef.set(cmd).catch(console.error);
 
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
-    const database = firebase.database();
-    const syncRef = database.ref('audioSync');
+    // schedule host local playback at the same absolute time
+    scheduleLocalPlay(startAt);
 
-    // Global variables
-    let isHost = false;
-    let isJoin = false;
-    let currentAudio = null;
-    let mediaFiles = [];
-    let syncInterval = null;
-    let audioElement = document.getElementById('audio-player');
+    // start periodic heartbeat (every 3s) for drift correction (lightweight)
+    startHostHeartbeat();
+    // update controls icon
+    document.getElementById('play-pause-icon').textContent = '⏸';
+  }
 
-    // Fetch media files from Google Drive
-    async function fetchMediaFiles() {
-      try {
-        const url = `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER_ID}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)&key=${GOOGLE_API_KEY}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.files) {
-          mediaFiles = data.files.filter(file => 
-            file.mimeType.startsWith('audio/')
-          );
-          return mediaFiles;
-        }
-        return [];
-      } catch (error) {
-        console.error('Error fetching media files:', error);
-        return [];
+  // Schedule host local play (so host also plays exactly at the scheduled server time)
+  function scheduleLocalPlay(startAtMs) {
+    let delayMs = startAtMs - serverNow();
+    if (delayMs < 0) delayMs = 0;
+    schedulePlayAt(audioElement, delayMs);
+  }
+
+  // Heartbeat writer for host — light weight (every 3000ms)
+  function startHostHeartbeat() {
+    if (hostHeartbeatInterval) clearInterval(hostHeartbeatInterval);
+    hostHeartbeatInterval = setInterval(() => {
+      if (audioElement && !audioElement.paused && currentAudio) {
+        const hb = {
+          type: 'heartbeat',
+          isPlaying: true,
+          trackId: currentAudio.id,
+          trackName: currentAudio.name,
+          currentTime: audioElement.currentTime,
+          serverTime: serverNow()
+        };
+        // update (won't overwhelm)
+        syncRef.update(hb).catch(console.warn);
       }
-    }
+    }, 3000);
+  }
 
-    // Initialize Host Mode
-    async function initHost() {
-      isHost = true;
-      isJoin = false;
-      
-      document.getElementById('initial-screen').classList.add('hidden');
-      document.getElementById('host-screen').classList.remove('hidden');
-      
-      const files = await fetchMediaFiles();
-      displayPlaylist(files);
-    }
+  // === Join flow ===
+  function initJoin() {
+    isJoin = true; isHost = false;
+    document.getElementById('initial-screen').classList.add('hidden');
+    document.getElementById('waiting-screen').classList.remove('hidden');
 
-    // Display playlist for host
-    function displayPlaylist(files) {
-      const playlist = document.getElementById('playlist');
-      playlist.innerHTML = '';
-      
-      if (files.length === 0) {
-        playlist.innerHTML = '<p style="text-align:center; color:#666;">No audio files found</p>';
-        return;
-      }
-      
-      files.forEach((file, index) => {
-        const item = document.createElement('div');
-        item.className = 'playlist-item';
-        item.innerHTML = `
-          <div class="playlist-icon">🎵</div>
-          <div class="playlist-info">
-            <div class="playlist-title">${file.name}</div>
-            <div class="playlist-type">Audio Track</div>
-          </div>
-        `;
-        item.onclick = () => playAudio(file, index);
-        playlist.appendChild(item);
-      });
-    }
-
-    // Play audio (Host)
-    function playAudio(file, index) {
-      currentAudio = file;
-      
-      // Update UI
-      document.getElementById('host-screen').classList.add('hidden');
-      document.getElementById('player-screen').classList.remove('hidden');
-      document.getElementById('host-controls').style.display = 'flex';
-      document.getElementById('track-title').textContent = file.name;
-      document.getElementById('track-artist').textContent = 'Audio File';
-      
-      // Load and play audio
-      const audioUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${GOOGLE_API_KEY}`;
-      audioElement.src = audioUrl;
-      audioElement.load();
-      
-      audioElement.onloadedmetadata = () => {
-        audioElement.play();
-        startHostSync();
-      };
-      
-      // Update progress bar
-      audioElement.ontimeupdate = updateProgressBar;
-    }
-
-    // Start syncing for host
-    function startHostSync() {
-      // Clear any existing interval
-      if (syncInterval) clearInterval(syncInterval);
-      
-      // Update Firebase every 50ms for millisecond accuracy
-      syncInterval = setInterval(() => {
-        if (audioElement && !audioElement.paused) {
-          const syncData = {
-            isPlaying: true,
-            currentTime: audioElement.currentTime,
-            duration: audioElement.duration,
-            timestamp: firebase.database.ServerValue.TIMESTAMP,
-            trackId: currentAudio.id,
-            trackName: currentAudio.name
-          };
-          syncRef.set(syncData);
-        }
-      }, 50);
-      
-      // Handle audio end
-      audioElement.onended = () => {
-        stopPlayback();
-      };
-    }
-
-    // Initialize Join Mode
-    async function initJoin() {
-      isJoin = true;
-      isHost = false;
-      
-      document.getElementById('initial-screen').classList.add('hidden');
-      document.getElementById('waiting-screen').classList.remove('hidden');
-      
-      // Listen for audio sync updates
-      syncRef.on('value', (snapshot) => {
-        const data = snapshot.val();
-        
-        if (data && data.isPlaying) {
-          // Audio is playing, show player
-          if (document.getElementById('waiting-screen').classList.contains('hidden') === false) {
-            document.getElementById('waiting-screen').classList.add('hidden');
-            document.getElementById('player-screen').classList.remove('hidden');
-          }
-          
-          // Sync audio playback
-          syncAudioPlayback(data);
-        } else {
-          // No audio playing, show waiting screen
-          if (document.getElementById('player-screen').classList.contains('hidden') === false) {
-            document.getElementById('player-screen').classList.add('hidden');
-            document.getElementById('waiting-screen').classList.remove('hidden');
-          }
-        }
-      });
-    }
-
-    // Sync audio playback for join users
-    function syncAudioPlayback(data) {
-      const audioUrl = `https://www.googleapis.com/drive/v3/files/${data.trackId}?alt=media&key=${GOOGLE_API_KEY}`;
-      
-      // Update track info
-      document.getElementById('track-title').textContent = data.trackName;
-      document.getElementById('track-artist').textContent = 'Synced Audio';
-      document.getElementById('host-controls').style.display = 'none';
-      
-      // Load audio if different track
-      if (audioElement.src !== audioUrl) {
-        audioElement.src = audioUrl;
-        audioElement.load();
-      }
-      
-      // Calculate time difference and sync
-      const currentServerTime = Date.now();
-      const timeDiff = data.currentTime;
-      
-      // Sync with tolerance of 100ms
-      if (Math.abs(audioElement.currentTime - timeDiff) > 0.1) {
-        audioElement.currentTime = timeDiff;
-      }
-      
-      // Ensure audio is playing
-      if (audioElement.paused) {
-        audioElement.play().catch(err => console.log('Playback error:', err));
-      }
-      
-      // Update progress bar
-      audioElement.ontimeupdate = updateProgressBar;
-    }
-
-    // Update progress bar
-    function updateProgressBar() {
-      if (audioElement.duration) {
-        const progress = (audioElement.currentTime / audioElement.duration) * 100;
-        document.getElementById('progress-fill').style.width = progress + '%';
-        document.getElementById('current-time').textContent = formatTime(audioElement.currentTime);
-        document.getElementById('total-time').textContent = formatTime(audioElement.duration);
-      }
-    }
-
-    // Seek audio (host only)
-    function seekAudio(event) {
-      if (!isHost) return;
-      
-      const progressBar = document.getElementById('progress-bar');
-      const rect = progressBar.getBoundingClientRect();
-      const percent = (event.clientX - rect.left) / rect.width;
-      audioElement.currentTime = percent * audioElement.duration;
-    }
-
-    // Toggle play/pause (host only)
-    function togglePlayPause() {
-      if (!isHost) return;
-      
-      if (audioElement.paused) {
-        audioElement.play();
-        document.getElementById('play-pause-icon').textContent = '⏸';
-        startHostSync();
+    // Listen for control/heartbeat updates
+    syncRef.on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (!data) return;
+      if (data.type === 'play' && data.isPlaying) {
+        // received new play command
+        handlePlayCommand(data);
+      } else if (data.type === 'heartbeat' && data.isPlaying) {
+        // regular heartbeat — use for drift correction
+        handleHeartbeat(data);
       } else {
-        audioElement.pause();
-        document.getElementById('play-pause-icon').textContent = '▶';
-        if (syncInterval) clearInterval(syncInterval);
-        syncRef.set({ isPlaying: false });
-      }
-    }
-
-    // Stop playback
-    function stopPlayback() {
-      audioElement.pause();
-      audioElement.currentTime = 0;
-      
-      if (syncInterval) {
-        clearInterval(syncInterval);
-        syncInterval = null;
-      }
-      
-      if (isHost) {
-        syncRef.set({ isPlaying: false });
-        document.getElementById('player-screen').classList.add('hidden');
-        document.getElementById('host-screen').classList.remove('hidden');
-      } else {
-        syncRef.off();
-        goBack();
-      }
-    }
-
-    // Go back to initial screen
-    function goBack() {
-      // Stop any playback
-      audioElement.pause();
-      audioElement.src = '';
-      
-      // Clear sync
-      if (syncInterval) clearInterval(syncInterval);
-      if (isJoin) syncRef.off();
-      
-      // Reset state
-      isHost = false;
-      isJoin = false;
-      currentAudio = null;
-      
-      // Show initial screen
-      document.getElementById('initial-screen').classList.remove('hidden');
-      document.getElementById('waiting-screen').classList.add('hidden');
-      document.getElementById('host-screen').classList.add('hidden');
-      document.getElementById('player-screen').classList.add('hidden');
-    }
-
-    // Format time helper
-    function formatTime(seconds) {
-      if (isNaN(seconds)) return '0:00';
-      const mins = Math.floor(seconds / 60);
-      const secs = Math.floor(seconds % 60);
-      return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    // Clean up on page unload
-    window.addEventListener('beforeunload', () => {
-      if (isHost && syncInterval) {
-        syncRef.set({ isPlaying: false });
-      }
-      if (isJoin) {
-        syncRef.off();
+        // not playing
+        if (!document.getElementById('player-screen').classList.contains('hidden')) {
+          document.getElementById('player-screen').classList.add('hidden');
+          document.getElementById('waiting-screen').classList.remove('hidden');
+        }
       }
     });
-  </script>
+  }
+
+  // Handle play command on joiner
+  function handlePlayCommand(data) {
+    const audioUrl = `https://www.googleapis.com/drive/v3/files/${data.trackId}?alt=media&key=${GOOGLE_API_KEY}`;
+    // update UI
+    if (document.getElementById('waiting-screen').classList.contains('hidden') === false) {
+      document.getElementById('waiting-screen').classList.add('hidden');
+      document.getElementById('player-screen').classList.remove('hidden');
+    }
+    document.getElementById('track-title').textContent = data.trackName;
+    document.getElementById('track-artist').textContent = 'Synced Audio';
+    document.getElementById('host-controls').style.display = 'none';
+
+    // load track if different
+    if (!audioElement.src || !audioElement.src.includes(data.trackId)) {
+      audioElement.src = audioUrl;
+      audioElement.load();
+    }
+
+    // schedule local playback at absolute server time
+    const delayMs = data.startAt - serverNow();
+    schedulePlayAt(audioElement, Math.max(0, delayMs));
+  }
+
+  // Heartbeat handling: small corrections to keep clients in sync
+  function handleHeartbeat(data) {
+    // if different track mid-play, ensure loaded
+    if (!currentAudio || currentAudio.id !== data.trackId) {
+      currentAudio = { id: data.trackId, name: data.trackName };
+      const audioUrl = `https://www.googleapis.com/drive/v3/files/${data.trackId}?alt=media&key=${GOOGLE_API_KEY}`;
+      audioElement.src = audioUrl;
+      audioElement.load();
+    }
+
+    // Ensure playing
+    if (audioElement.paused) {
+      audioElement.play().catch(e => console.warn('Playback call failed:', e));
+    }
+
+    // expected time on client now (in seconds)
+    const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0);
+    const delta = audioElement.currentTime - expected; // positive => client ahead
+
+    // If very large drift -> hard seek (safe threshold)
+    if (Math.abs(delta) > 0.2) {
+      // big correction (hard seek) only when necessary
+      audioElement.currentTime = Math.max(0, expected);
+      console.log('Large drift corrected', delta);
+    } else if (Math.abs(delta) > 0.02) {
+      // small drift: gently nudge with playbackRate for a short time
+      const correctionWindowSec = 30; // distribute correction across this window to avoid audible artifact
+      let rate = 1 - (delta / correctionWindowSec);
+      // clamp rate to small band (avoid audible pitch changes)
+      rate = Math.max(0.995, Math.min(1.005, rate));
+      audioElement.playbackRate = rate;
+      // revert to normal after short time
+      setTimeout(() => { audioElement.playbackRate = 1.0; }, 1800);
+    }
+  }
+
+  // Schedule play at a precise time relative to performance.now
+  function schedulePlayAt(audio, delayMs) {
+    // ensure some buffer if possible (wait up to a short timeout)
+    const minBufferSeconds = Math.min(1, Math.max(0.1, delayMs / 1000)); // at least a bit
+    waitForBuffered(audio, 0, minBufferSeconds, Math.max(1000, delayMs + 1500)).then(() => {
+      // high resolution scheduling
+      const targetPerf = performance.now() + delayMs;
+      const doPlay = () => {
+        audio.play().catch(err => console.warn('Play failed:', err));
+      };
+      // recursive scheduling to improve accuracy
+      (function scheduleLoop() {
+        const rem = targetPerf - performance.now();
+        if (rem > 50) {
+          setTimeout(scheduleLoop, Math.max(rem - 30, 10));
+        } else if (rem > 5) {
+          setTimeout(doPlay, rem);
+        } else if (rem > 0) {
+          requestAnimationFrame(function check() {
+            if (performance.now() >= targetPerf) doPlay();
+            else requestAnimationFrame(check);
+          });
+        } else {
+          doPlay();
+        }
+      })();
+    }).catch(() => {
+      // if waiting fails, just play
+      audio.play().catch(err => console.warn('Play fallback failed:', err));
+    });
+  }
+
+  // Wait for buffered data (simple helper)
+  function waitForBuffered(audio, startSec = 0, minSeconds = 0.5, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      function check() {
+        try {
+          const buf = audio.buffered;
+          if (buf && buf.length) {
+            for (let i = 0; i < buf.length; i++) {
+              const s = buf.start(i), e = buf.end(i);
+              if (startSec >= s && (e - startSec) >= minSeconds) {
+                cleanup();
+                return resolve();
+              }
+            }
+            // any large range?
+            for (let i = 0; i < buf.length; i++) {
+              if ((buf.end(i) - buf.start(i)) >= minSeconds) {
+                cleanup();
+                return resolve();
+              }
+            }
+          }
+        } catch (e) { /* ignore */ }
+        if (Date.now() > deadline) { cleanup(); return resolve(); }
+      }
+      const timer = setInterval(check, 180);
+      audio.addEventListener('progress', check);
+      function cleanup() {
+        clearInterval(timer);
+        audio.removeEventListener('progress', check);
+      }
+      check();
+    });
+  }
+
+  // Update progress UI (same as original)
+  function updateProgressBar() {
+    if (audioElement.duration && !isNaN(audioElement.duration)) {
+      const progress = (audioElement.currentTime / audioElement.duration) * 100;
+      document.getElementById('progress-fill').style.width = progress + '%';
+      document.getElementById('current-time').textContent = formatTime(audioElement.currentTime);
+      document.getElementById('total-time').textContent = formatTime(audioElement.duration);
+    }
+  }
+  audioElement.ontimeupdate = updateProgressBar;
+
+  // Play/pause for host only (keeps behaviour but uses commands)
+  function togglePlayPause() {
+    if (!isHost) return;
+    if (audioElement.paused) {
+      // schedule immediate / near-immediate play
+      const startAt = serverNow() + 300;
+      syncRef.set({
+        type: 'play',
+        isPlaying: true,
+        trackId: currentAudio.id,
+        trackName: currentAudio.name,
+        startAt,
+        serverTime: serverNow()
+      }).catch(console.error);
+      scheduleLocalPlay(startAt);
+      startHostHeartbeat();
+      document.getElementById('play-pause-icon').textContent = '⏸';
+    } else {
+      // pause + stop
+      audioElement.pause();
+      if (hostHeartbeatInterval) { clearInterval(hostHeartbeatInterval); hostHeartbeatInterval = null; }
+      syncRef.set({ type: 'stop', isPlaying: false }).catch(console.error);
+      document.getElementById('play-pause-icon').textContent = '▶';
+    }
+  }
+
+  function stopPlayback() {
+    audioElement.pause();
+    audioElement.currentTime = 0;
+    if (hostHeartbeatInterval) { clearInterval(hostHeartbeatInterval); hostHeartbeatInterval = null; }
+    if (isHost) {
+      syncRef.set({ type: 'stop', isPlaying: false }).catch(console.error);
+      document.getElementById('player-screen').classList.add('hidden');
+      document.getElementById('host-screen').classList.remove('hidden');
+    } else {
+      syncRef.off();
+      goBack();
+    }
+  }
+
+  function goBack() {
+    audioElement.pause();
+    audioElement.src = '';
+    if (hostHeartbeatInterval) { clearInterval(hostHeartbeatInterval); hostHeartbeatInterval = null; }
+    if (isJoin) syncRef.off();
+    isHost = false; isJoin = false; currentAudio = null;
+    document.getElementById('initial-screen').classList.remove('hidden');
+    document.getElementById('waiting-screen').classList.add('hidden');
+    document.getElementById('host-screen').classList.add('hidden');
+    document.getElementById('player-screen').classList.add('hidden');
+  }
+
+  function formatTime(seconds) {
+    if (isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Clean up on unload
+  window.addEventListener('beforeunload', () => {
+    if (isHost && hostHeartbeatInterval) {
+      syncRef.set({ type: 'stop', isPlaying: false }).catch(() => {});
+    }
+    if (isJoin) syncRef.off();
+  });
+      </script>
+  
 </body>
 </html>
