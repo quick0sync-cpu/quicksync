@@ -552,7 +552,9 @@
     }
 
     // expected time on client now (in seconds)
-    const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0);
+    // Add bias so join device plays 1.0 sec ahead
+const bias = 1.0;  
+const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0) + bias;
     const delta = audioElement.currentTime - expected; // positive => client ahead
 
     // If very large drift -> hard seek (safe threshold)
