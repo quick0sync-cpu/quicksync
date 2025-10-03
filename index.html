@@ -557,20 +557,13 @@
 
     // If very large drift -> hard seek (safe threshold)
     if (Math.abs(delta) > 0.2) {
-      // big correction (hard seek) only when necessary
       audioElement.currentTime = Math.max(0, expected);
       console.log('Large drift corrected', delta);
     } else if (Math.abs(delta) > 0.02) {
-      // small drift: gently nudge with playbackRate for a short time
-      const correctionWindowSec = 30; // distribute correction across this window to avoid audible artifact
-      let rate = 1 - (delta / correctionWindowSec);
-      // clamp rate to small band (avoid audible pitch changes)
-      rate = Math.max(0.995, Math.min(1.005, rate));
-      audioElement.playbackRate = rate;
-      // revert to normal after short time
-      setTimeout(() => { audioElement.playbackRate = 1.0; }, 1800);
+      // small drift: correct with a tiny seek instead of changing speed
+      audioElement.currentTime = Math.max(0, expected);
+      console.log('Small drift corrected instantly', delta);
     }
-  }
 
   // Schedule play at a precise time relative to performance.now
   function schedulePlayAt(audio, delayMs) {
