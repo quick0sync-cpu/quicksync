@@ -564,6 +564,7 @@
       audioElement.currentTime = Math.max(0, expected);
       console.log('Small drift corrected instantly', delta);
     }
+  }
 
   // Schedule play at a precise time relative to performance.now
   function schedulePlayAt(audio, delayMs) {
