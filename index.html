@@ -439,8 +439,8 @@
     audioElement.src = audioUrl;
     audioElement.load();
 
-    // schedule start a short time in future to let clients buffer (0.5s)
-const startAt = serverNow() + 500;
+    // schedule start a short time in future to let clients buffer (5s)
+const startAt = serverNow() + 5000;
 const cmd = {
   type: 'play',
   isPlaying: true,
