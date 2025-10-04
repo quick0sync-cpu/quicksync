@@ -439,21 +439,20 @@
     audioElement.src = audioUrl;
     audioElement.load();
 
-    // schedule start a short time in future to let clients buffer (2s)
-    const startAt = serverNow() + 2000;
-    const cmd = {
-      type: 'play',
-      isPlaying: true,
-      trackId: file.id,
-      trackName: file.name,
-      startAt: startAt,
-      serverTime: serverNow()
-    };
-    // single write command (no 50ms spam)
-    syncRef.set(cmd).catch(console.error);
+    // schedule start a short time in future to let clients buffer (0.5s)
+const startAt = serverNow() + 500;
+const cmd = {
+  type: 'play',
+  isPlaying: true,
+  trackId: file.id,
+  trackName: file.name,
+  startAt: startAt,
+  serverTime: serverNow()
+};
+syncRef.set(cmd).catch(console.error);
 
-    // schedule host local playback at the same absolute time
-    scheduleLocalPlay(startAt);
+// schedule host local playback at the same absolute time
+scheduleLocalPlay(startAt);
 
     // start periodic heartbeat (every 3s) for drift correction (lightweight)
     startHostHeartbeat();
@@ -551,20 +550,26 @@
       audioElement.play().catch(e => console.warn('Playback call failed:', e));
     }
 
-    // expected time on client now (in seconds)
     
-const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0);
-    const delta = audioElement.currentTime - expected; // positive => client ahead
+// expected time on client now (in seconds), with bias
+const bias = -0.20; // optional bias, play 200ms earlier
+const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0) + bias;
+const delta = audioElement.currentTime - expected; // positive => client ahead
 
-    // If very large drift -> hard seek (safe threshold)
-    if (Math.abs(delta) > 0.2) {
-      audioElement.currentTime = Math.max(0, expected);
-      console.log('Large drift corrected', delta);
-    } else if (Math.abs(delta) > 0.02) {
-      // small drift: correct with a tiny seek instead of changing speed
-      audioElement.currentTime = Math.max(0, expected);
-      console.log('Small drift corrected instantly', delta);
-    }
+// If very large drift -> hard seek
+if (Math.abs(delta) > 0.2) {
+  audioElement.currentTime = Math.max(0, expected);
+  console.log('Large drift corrected (hard seek)', delta);
+} else if (Math.abs(delta) > 0.02) {
+  // Small drift: gently adjust playback speed instead of skipping
+  const correctionWindowSec = 10; // spread correction over 10s
+  let rate = 1 - (delta / correctionWindowSec);
+  rate = Math.max(0.98, Math.min(1.02, rate)); // keep within safe limits
+  audioElement.playbackRate = rate;
+
+  // reset back to normal speed after a while
+  setTimeout(() => { audioElement.playbackRate = 1.0; }, 2000);
+}
   }
 
   // Schedule play at a precise time relative to performance.now
