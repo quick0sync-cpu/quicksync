@@ -484,7 +484,7 @@
         // update (won't overwhelm)
         syncRef.update(hb).catch(console.warn);
       }
-    }, 3000);
+    }, 30000);
   }
 
   // === Join flow ===
@@ -646,31 +646,66 @@ const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0);
   }
   audioElement.ontimeupdate = updateProgressBar;
 
-  // Play/pause for host only (keeps behaviour but uses commands)
-  function togglePlayPause() {
-    if (!isHost) return;
-    if (audioElement.paused) {
-      // schedule immediate / near-immediate play
-      const startAt = serverNow() + 300;
-      syncRef.set({
-        type: 'play',
-        isPlaying: true,
-        trackId: currentAudio.id,
-        trackName: currentAudio.name,
-        startAt,
-        serverTime: serverNow()
-      }).catch(console.error);
-      scheduleLocalPlay(startAt);
-      startHostHeartbeat();
-      document.getElementById('play-pause-icon').textContent = '⏸';
-    } else {
-      // pause + stop
-      audioElement.pause();
-      if (hostHeartbeatInterval) { clearInterval(hostHeartbeatInterval); hostHeartbeatInterval = null; }
-      syncRef.set({ type: 'stop', isPlaying: false }).catch(console.error);
-      document.getElementById('play-pause-icon').textContent = '▶';
+function togglePlayPause() {
+  if (!isHost) return;
+
+  if (audioElement.paused) {
+    // === PLAY pressed ===
+    const startAt = serverNow() + 300; // schedule 0.3s in future
+    const playCmd = {
+      type: 'play',
+      isPlaying: true,
+      trackId: currentAudio.id,
+      trackName: currentAudio.name,
+      startAt,
+      serverTime: serverNow()
+    };
+    // Send immediate play command
+    syncRef.set(playCmd).catch(console.error);
+
+    // Play locally at scheduled time
+    scheduleLocalPlay(startAt);
+
+    // Start periodic heartbeat (every 30s for drift correction)
+    if (hostHeartbeatInterval) clearInterval(hostHeartbeatInterval);
+    hostHeartbeatInterval = setInterval(() => {
+      if (audioElement && !audioElement.paused && currentAudio) {
+        const hb = {
+          type: 'heartbeat',
+          isPlaying: true,
+          trackId: currentAudio.id,
+          trackName: currentAudio.name,
+          currentTime: audioElement.currentTime,
+          serverTime: serverNow()
+        };
+        syncRef.update(hb).catch(console.warn);
+      }
+    }, 30000); // 30s interval
+
+    document.getElementById('play-pause-icon').textContent = '⏸';
+  } else {
+    // === PAUSE pressed ===
+    audioElement.pause();
+    const pauseCmd = {
+      type: 'pause',
+      isPlaying: false,
+      trackId: currentAudio.id,
+      trackName: currentAudio.name,
+      currentTime: audioElement.currentTime,
+      serverTime: serverNow()
+    };
+    // Send immediate pause command
+    syncRef.set(pauseCmd).catch(console.error);
+
+    // Stop heartbeat while paused
+    if (hostHeartbeatInterval) { 
+      clearInterval(hostHeartbeatInterval); 
+      hostHeartbeatInterval = null; 
     }
+
+    document.getElementById('play-pause-icon').textContent = '▶';
   }
+}
 
   function stopPlayback() {
     audioElement.pause();
