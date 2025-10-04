@@ -494,22 +494,29 @@ scheduleLocalPlay(startAt);
 
     // Listen for control/heartbeat updates
     syncRef.on('value', (snapshot) => {
-      const data = snapshot.val();
-      if (!data) return;
-      if (data.type === 'play' && data.isPlaying) {
-        // received new play command
-        handlePlayCommand(data);
-      } else if (data.type === 'heartbeat' && data.isPlaying) {
-        // regular heartbeat — use for drift correction
-        handleHeartbeat(data);
-      } else {
-        // not playing
-        if (!document.getElementById('player-screen').classList.contains('hidden')) {
-          document.getElementById('player-screen').classList.add('hidden');
-          document.getElementById('waiting-screen').classList.remove('hidden');
-        }
-      }
-    });
+  const data = snapshot.val();
+  if (!data) return;
+
+  if (data.type === 'play' && data.isPlaying) {
+    handlePlayCommand(data);
+  } else if (data.type === 'pause') {
+    handlePauseCommand(data);
+  } else if (data.type === 'heartbeat' && data.isPlaying) {
+    handleHeartbeat(data);
+  } else if (data.type === 'stop') {
+    audioElement.pause();
+    audioElement.currentTime = 0;
+    document.getElementById('player-screen').classList.add('hidden');
+    document.getElementById('waiting-screen').classList.remove('hidden');
+  }
+});
+    function handlePauseCommand(data) {
+  audioElement.pause();
+  if (data.currentTime !== undefined) {
+    audioElement.currentTime = data.currentTime;
+  }
+  console.log("Join paused at", data.currentTime);
+    }
   }
 
   // Handle play command on joiner
