@@ -557,14 +557,14 @@ const expected = data.currentTime + ((serverNow() - data.serverTime) / 1000.0) +
 const delta = audioElement.currentTime - expected; // positive => client ahead
 
 // If very large drift -> hard seek
-if (Math.abs(delta) > 0.2) {
+if (Math.abs(delta) > 0.05) {
   audioElement.currentTime = Math.max(0, expected);
   console.log('Large drift corrected (hard seek)', delta);
-} else if (Math.abs(delta) > 0.02) {
+} else if (Math.abs(delta) > 0.01) {
   // Small drift: gently adjust playback speed instead of skipping
-  const correctionWindowSec = 10; // spread correction over 10s
+  const correctionWindowSec = 2; // spread correction over 2s
   let rate = 1 - (delta / correctionWindowSec);
-  rate = Math.max(0.98, Math.min(1.02, rate)); // keep within safe limits
+  rate = Math.max(0.90, Math.min(1.10, rate)); // keep within safe limits
   audioElement.playbackRate = rate;
 
   // reset back to normal speed after a while
