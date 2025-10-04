@@ -377,21 +377,37 @@
   }
 
   // === Fetch files (same logic, kept) ===
-  async function fetchMediaFiles() {
-    try {
-      const url = `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER_ID}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)&key=${GOOGLE_API_KEY}`;
+async function fetchMediaFiles() {
+  let allFiles = [];
+  let pageToken = null;
+
+  try {
+    do {
+      const url = new URL("https://www.googleapis.com/drive/v3/files");
+      url.searchParams.set("q", `'${DRIVE_FOLDER_ID}' in parents and trashed=false`);
+      url.searchParams.set("fields", "nextPageToken, files(id, name, mimeType)");
+      url.searchParams.set("pageSize", "1000"); // request more files
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      url.searchParams.set("key", GOOGLE_API_KEY);
+
       const response = await fetch(url);
       const data = await response.json();
-      if (data && data.files) {
-        mediaFiles = data.files.filter(f => f.mimeType && f.mimeType.startsWith('audio/'));
-        return mediaFiles;
+
+      if (data.files && data.files.length > 0) {
+        const audioFiles = data.files.filter(f => f.mimeType && f.mimeType.startsWith("audio/"));
+        allFiles = allFiles.concat(audioFiles);
       }
-      return [];
-    } catch (err) {
-      console.error('Error fetching media files:', err);
-      return [];
-    }
+
+      pageToken = data.nextPageToken || null;
+    } while (pageToken);
+
+    mediaFiles = allFiles;
+    return allFiles;
+  } catch (err) {
+    console.error("Error fetching all media files:", err);
+    return [];
   }
+}
 
   // === UI helpers ===
   function displayPlaylist(files) {
